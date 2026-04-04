@@ -1,0 +1,464 @@
+// This Pine Script™ source code is subject to the terms of the Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+// © Mean Reversion Bounce Indicator V2
+
+//@version=5
+indicator("Mean Reversion Bounce V2", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=100)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── INPUTS ───────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// --- Trend Ribbon ---
+grpTrend = "═══ Trend Ribbon ═══"
+trendType    = input.string("EMA", "MA Type", options=["EMA","SMA","HMA","DEMA","VWAP"], group=grpTrend)
+trendLength  = input.int(200, "Length", minval=1, group=grpTrend)
+trendTF      = input.timeframe("", "Timeframe (MTF)", tooltip="Leave blank for current TF", group=grpTrend)
+useTrendFilter = input.bool(true, "Use Trend Filter", group=grpTrend)
+showRibbon   = input.bool(true, "Show Ribbon", group=grpTrend)
+ribbonWidth  = input.int(3, "Ribbon Width", minval=1, maxval=10, group=grpTrend)
+
+// --- Mean Reversion Engine ---
+grpEngine = "═══ Mean Reversion Engine ═══"
+devSource    = input.source(close, "Source", group=grpEngine)
+devLength    = input.int(20, "Deviation Lookback", minval=2, group=grpEngine)
+devMult1     = input.float(2.0, "Tier 1 Multiplier", minval=0.1, step=0.1, group=grpEngine, tooltip="Default 2.0 — backtested optimal")
+devMult2     = input.float(3.0, "Tier 2 Multiplier", minval=0.1, step=0.1, group=grpEngine, tooltip="Default 3.0 — backtested optimal")
+devMult3     = input.float(4.0, "Tier 3 Multiplier", minval=0.1, step=0.1, group=grpEngine, tooltip="Default 4.0 — best PF 2.04, WR 51%")
+devMaType    = input.string("EMA", "Deviation MA Type", options=["EMA","SMA"], group=grpEngine)
+devMaLen     = input.int(20, "Deviation MA Length", minval=2, group=grpEngine)
+
+// --- Confirmation Filters (V2 NEW) ---
+grpFilters = "═══ Confirmation Filters (V2) ═══"
+useRSI       = input.bool(true, "Use RSI Filter", group=grpFilters)
+rsiLength    = input.int(14, "RSI Length", minval=2, group=grpFilters)
+rsiOversold  = input.float(30, "RSI Oversold (<)", minval=5, maxval=50, group=grpFilters)
+rsiOverbought = input.float(70, "RSI Overbought (>)", minval=50, maxval=95, group=grpFilters)
+
+useADX       = input.bool(true, "Use ADX Filter (Range Detect)", group=grpFilters)
+adxLength    = input.int(14, "ADX Length", minval=2, group=grpFilters)
+adxThreshold = input.float(25, "ADX Max (below = ranging)", minval=10, maxval=50, group=grpFilters)
+
+useVolFilter = input.bool(true, "Use Volume Spike Filter", group=grpFilters)
+volMaLen     = input.int(20, "Volume MA Length", minval=5, group=grpFilters)
+volMult      = input.float(1.5, "Volume Spike Multiplier", minval=1.0, step=0.1, group=grpFilters)
+
+cooldownBars = input.int(8, "Cooldown Between Signals (bars)", minval=0, maxval=50, group=grpFilters)
+
+// --- TP/SL Mode (V2 NEW) ---
+grpTP = "═══ Take Profit / Stop Loss V2 ═══"
+tpMode       = input.string("Mean Reversion", "TP Mode", options=["Mean Reversion", "Liquidity (V1)"], group=grpTP,
+     tooltip="Mean Reversion: TP at dev MA. Liquidity: TP at HTF high/low")
+usePartialTP = input.bool(true, "Partial TP (60% at mean, 40% trailing)", group=grpTP)
+trailATRmult = input.float(1.5, "Trailing Stop ATR Multiplier", minval=0.5, step=0.1, group=grpTP)
+atrLength    = input.int(14, "ATR Length", minval=2, group=grpTP)
+slMode       = input.string("Stdev Based", "SL Mode", options=["Stdev Based", "Next Band", "1:1 RR", "ATR Based"], group=grpTP,
+     tooltip="Stdev Based (RECOMMENDED): SL at 1.0x stdev below band. Next Band: SL at next deviation band. 1:1: SL = distance to TP. ATR: SL at Nx ATR")
+slStdevMult  = input.float(1.0, "SL Stdev Multiplier", minval=0.1, step=0.1, group=grpTP, tooltip="For Stdev Based SL: 1.0 = optimal backtested")
+slATRmult    = input.float(2.0, "SL ATR Multiplier", minval=0.5, step=0.1, group=grpTP)
+
+// --- Signal Display ---
+grpSignals = "═══ Signals ═══"
+showTier1    = input.bool(true,  "Show Tier 1 (Circles)", group=grpSignals)
+showTier2    = input.bool(true,  "Show Tier 2 (Triangles)", group=grpSignals)
+showTier3    = input.bool(true,  "Show Tier 3 (Diamonds)", group=grpSignals)
+showProjection = input.bool(true, "Show Signal Projection Lines", group=grpSignals)
+showSLTP     = input.bool(true, "Show SL/TP on Signals", group=grpSignals)
+
+// --- Liquidity Levels ---
+grpLiq = "═══ Liquidity Levels ═══"
+liqTF1       = input.timeframe("D", "Liquidity TF 1 (solid)", group=grpLiq)
+liqTF2       = input.timeframe("240", "Liquidity TF 2 (dashed)", group=grpLiq)
+liqLookback  = input.int(20, "Lookback Bars (on HTF)", minval=5, maxval=100, group=grpLiq)
+showLiqLevels = input.bool(true, "Show Liquidity Levels", group=grpLiq)
+liqBullColor = input.color(color.new(color.green, 30), "Bull Liquidity Color", group=grpLiq)
+liqBearColor = input.color(color.new(color.red, 30), "Bear Liquidity Color", group=grpLiq)
+
+// --- Colors ---
+grpColors = "═══ Colors ═══"
+bullColor    = input.color(#00e676, "Bull Color", group=grpColors)
+bearColor    = input.color(#ff1744, "Bear Color", group=grpColors)
+neutralColor = input.color(#ffd740, "Filter Active Color", group=grpColors)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── FUNCTIONS ────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+hma(src, len) =>
+    halfLen = math.max(math.round(len / 2), 1)
+    sqrtLen = math.max(math.round(math.sqrt(len)), 1)
+    ta.wma(2 * ta.wma(src, halfLen) - ta.wma(src, len), sqrtLen)
+
+dema(src, len) =>
+    e1 = ta.ema(src, len)
+    2 * e1 - ta.ema(e1, len)
+
+calcMA(src, len, maType) =>
+    switch maType
+        "EMA"  => ta.ema(src, len)
+        "SMA"  => ta.sma(src, len)
+        "HMA"  => hma(src, len)
+        "DEMA" => dema(src, len)
+        => ta.ema(src, len)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── CORE INDICATORS ─────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// --- Trend MA (MTF) ---
+trendMA_raw = request.security(syminfo.tickerid, trendTF,
+     trendType == "VWAP" ? ta.vwap(hlc3) : calcMA(close, trendLength, trendType),
+     lookahead=barmerge.lookahead_off, gaps=barmerge.gaps_off)
+
+isBullTrend = useTrendFilter ? close > trendMA_raw : true
+isBearTrend = useTrendFilter ? close < trendMA_raw : true
+trendColor = close > trendMA_raw ? bullColor : bearColor
+
+// --- Deviation Bands ---
+devMA = devMaType == "EMA" ? ta.ema(devSource, devMaLen) : ta.sma(devSource, devMaLen)
+stdev = ta.stdev(devSource, devLength)
+
+upperBand1 = devMA + stdev * devMult1
+upperBand2 = devMA + stdev * devMult2
+upperBand3 = devMA + stdev * devMult3
+lowerBand1 = devMA - stdev * devMult1
+lowerBand2 = devMA - stdev * devMult2
+lowerBand3 = devMA - stdev * devMult3
+
+// Extended band for Tier 3 SL
+devMult4 = devMult3 + (devMult3 - devMult2)  // e.g., 4.5 if T3=3.5, T2=2.5
+upperBand4 = devMA + stdev * devMult4
+lowerBand4 = devMA - stdev * devMult4
+
+// --- RSI ---
+rsiVal = ta.rsi(close, rsiLength)
+isOversold  = not useRSI or rsiVal < rsiOversold
+isOverbought = not useRSI or rsiVal > rsiOverbought
+
+// --- ADX ---
+[diPlus, diMinus, adxVal] = ta.dmi(adxLength, adxLength)
+isRanging = not useADX or adxVal < adxThreshold
+
+// --- Volume Spike ---
+volMA = ta.sma(volume, volMaLen)
+isVolSpike = not useVolFilter or (volume > volMA * volMult)
+
+// --- ATR ---
+atrVal = ta.atr(atrLength)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── SIGNAL DETECTION (V2 WITH FILTERS) ──────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// Raw band touch signals
+longTier1_raw  = low <= lowerBand1 and close > lowerBand1 and low[1] > lowerBand1[1]
+shortTier1_raw = high >= upperBand1 and close < upperBand1 and high[1] < upperBand1[1]
+longTier2_raw  = low <= lowerBand2 and close > lowerBand2 and low[1] > lowerBand2[1]
+shortTier2_raw = high >= upperBand2 and close < upperBand2 and high[1] < upperBand2[1]
+longTier3_raw  = low <= lowerBand3 and close > lowerBand3 and low[1] > lowerBand3[1]
+shortTier3_raw = high >= upperBand3 and close < upperBand3 and high[1] < upperBand3[1]
+
+// Cooldown tracking
+var int barsSinceSignal = 999
+barsSinceSignal := barsSinceSignal + 1
+cooldownOK = barsSinceSignal >= cooldownBars
+
+// Full confirmation: trend + RSI + ADX + volume + cooldown
+longConfirm  = isBullTrend and isOversold and isRanging and isVolSpike and cooldownOK
+shortConfirm = isBearTrend and isOverbought and isRanging and isVolSpike and cooldownOK
+
+// Filtered signals
+validLongT1  = longTier1_raw  and longConfirm
+validLongT2  = longTier2_raw  and longConfirm
+validLongT3  = longTier3_raw  and longConfirm
+validShortT1 = shortTier1_raw and shortConfirm
+validShortT2 = shortTier2_raw and shortConfirm
+validShortT3 = shortTier3_raw and shortConfirm
+
+// Reset cooldown on any valid signal
+anySignal = validLongT1 or validLongT2 or validLongT3 or validShortT1 or validShortT2 or validShortT3
+if anySignal
+    barsSinceSignal := 0
+
+// ═══════════════════════════════════════════════════════════════
+// ─── TP / SL CALCULATION (V2) ────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// Liquidity levels (for V1 mode and display)
+htf1_high = request.security(syminfo.tickerid, liqTF1, ta.highest(high, liqLookback), lookahead=barmerge.lookahead_off)
+htf1_low  = request.security(syminfo.tickerid, liqTF1, ta.lowest(low, liqLookback), lookahead=barmerge.lookahead_off)
+htf2_high = request.security(syminfo.tickerid, liqTF2, ta.highest(high, liqLookback), lookahead=barmerge.lookahead_off)
+htf2_low  = request.security(syminfo.tickerid, liqTF2, ta.lowest(low, liqLookback), lookahead=barmerge.lookahead_off)
+
+liqAbove1 = htf1_high > close ? htf1_high : na
+liqBelow1 = htf1_low < close ? htf1_low : na
+liqAbove2 = htf2_high > close ? htf2_high : na
+liqBelow2 = htf2_low < close ? htf2_low : na
+bestLiqAbove = not na(liqAbove2) and (na(liqAbove1) or liqAbove2 < liqAbove1) ? liqAbove2 : liqAbove1
+bestLiqBelow = not na(liqBelow2) and (na(liqBelow1) or liqBelow2 > liqBelow1) ? liqBelow2 : liqBelow1
+
+// Calculate TP based on mode
+getLongTP() =>
+    tpMode == "Mean Reversion" ? devMA : (not na(bestLiqAbove) ? bestLiqAbove : devMA)
+
+getShortTP() =>
+    tpMode == "Mean Reversion" ? devMA : (not na(bestLiqBelow) ? bestLiqBelow : devMA)
+
+// Calculate SL based on mode and tier
+getLongSL(tier) =>
+    if slMode == "Stdev Based"
+        bandLevel = switch tier
+            1 => lowerBand1
+            2 => lowerBand2
+            3 => lowerBand3
+            => lowerBand1
+        bandLevel - stdev * slStdevMult
+    else if slMode == "Next Band"
+        switch tier
+            1 => lowerBand2
+            2 => lowerBand3
+            3 => lowerBand4
+            => lowerBand2
+    else if slMode == "ATR Based"
+        close - atrVal * slATRmult
+    else  // 1:1 RR
+        tp = getLongTP()
+        close - (tp - close)
+
+getShortSL(tier) =>
+    if slMode == "Stdev Based"
+        bandLevel = switch tier
+            1 => upperBand1
+            2 => upperBand2
+            3 => upperBand3
+            => upperBand1
+        bandLevel + stdev * slStdevMult
+    else if slMode == "Next Band"
+        switch tier
+            1 => upperBand2
+            2 => upperBand3
+            3 => upperBand4
+            => upperBand2
+    else if slMode == "ATR Based"
+        close + atrVal * slATRmult
+    else  // 1:1 RR
+        tp = getShortTP()
+        close + (close - tp)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── PLOT SIGNALS ────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+plotshape(showTier1 and validLongT1, "Long T1", shape.circle, location.belowbar,
+     color=color.new(bullColor, 0), size=size.tiny)
+plotshape(showTier1 and validShortT1, "Short T1", shape.circle, location.abovebar,
+     color=color.new(bearColor, 0), size=size.tiny)
+
+plotshape(showTier2 and validLongT2, "Long T2", shape.triangleup, location.belowbar,
+     color=color.new(bullColor, 0), size=size.small)
+plotshape(showTier2 and validShortT2, "Short T2", shape.triangledown, location.abovebar,
+     color=color.new(bearColor, 0), size=size.small)
+
+plotshape(showTier3 and validLongT3, "Long T3", shape.diamond, location.belowbar,
+     color=color.new(bullColor, 0), size=size.normal)
+plotshape(showTier3 and validShortT3, "Short T3", shape.diamond, location.abovebar,
+     color=color.new(bearColor, 0), size=size.normal)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── PROJECTION & MEAN LINE ──────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+plot(showProjection ? upperBand1 : na, "Upper Band 1", color=color.new(bearColor, 70), style=plot.style_circles, linewidth=1)
+plot(showProjection ? upperBand2 : na, "Upper Band 2", color=color.new(bearColor, 50), style=plot.style_circles, linewidth=1)
+plot(showProjection ? upperBand3 : na, "Upper Band 3", color=color.new(bearColor, 30), style=plot.style_circles, linewidth=1)
+plot(showProjection ? lowerBand1 : na, "Lower Band 1", color=color.new(bullColor, 70), style=plot.style_circles, linewidth=1)
+plot(showProjection ? lowerBand2 : na, "Lower Band 2", color=color.new(bullColor, 50), style=plot.style_circles, linewidth=1)
+plot(showProjection ? lowerBand3 : na, "Lower Band 3", color=color.new(bullColor, 30), style=plot.style_circles, linewidth=1)
+
+// Mean line — highlighted as primary TP target
+plot(devMA, "Mean (TP Target)", color=color.new(color.white, 30), linewidth=2, style=plot.style_line)
+
+// Trend Ribbon
+p_trendMA = plot(showRibbon ? trendMA_raw : na, "Trend MA", color=trendColor, linewidth=ribbonWidth)
+p_close   = plot(showRibbon ? close : na, "Close", color=na, display=display.none)
+fill(p_trendMA, p_close, color=color.new(trendColor, 85), title="Trend Ribbon Fill")
+
+// ═══════════════════════════════════════════════════════════════
+// ─── SL / TP LABELS ──────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+anyLong  = (showTier1 and validLongT1) or (showTier2 and validLongT2) or (showTier3 and validLongT3)
+anyShort = (showTier1 and validShortT1) or (showTier2 and validShortT2) or (showTier3 and validShortT3)
+
+// Determine active tier for SL calculation
+activeLongTier  = validLongT3  ? 3 : validLongT2  ? 2 : 1
+activeShortTier = validShortT3 ? 3 : validShortT2 ? 2 : 1
+
+if showSLTP and anyLong
+    tp = getLongTP()
+    sl = getLongSL(activeLongTier)
+    if usePartialTP
+        label.new(bar_index, tp, "TP1 60% " + str.tostring(tp, format.mintick),
+             style=label.style_label_down, color=bullColor, textcolor=color.white, size=size.tiny)
+        label.new(bar_index, sl, "SL " + str.tostring(sl, format.mintick),
+             style=label.style_label_up, color=bearColor, textcolor=color.white, size=size.tiny)
+    else
+        label.new(bar_index, tp, "TP " + str.tostring(tp, format.mintick),
+             style=label.style_label_down, color=bullColor, textcolor=color.white, size=size.tiny)
+        label.new(bar_index, sl, "SL " + str.tostring(sl, format.mintick),
+             style=label.style_label_up, color=bearColor, textcolor=color.white, size=size.tiny)
+
+if showSLTP and anyShort
+    tp = getShortTP()
+    sl = getShortSL(activeShortTier)
+    if usePartialTP
+        label.new(bar_index, tp, "TP1 60% " + str.tostring(tp, format.mintick),
+             style=label.style_label_up, color=bearColor, textcolor=color.white, size=size.tiny)
+        label.new(bar_index, sl, "SL " + str.tostring(sl, format.mintick),
+             style=label.style_label_down, color=bullColor, textcolor=color.white, size=size.tiny)
+    else
+        label.new(bar_index, tp, "TP " + str.tostring(tp, format.mintick),
+             style=label.style_label_up, color=bearColor, textcolor=color.white, size=size.tiny)
+        label.new(bar_index, sl, "SL " + str.tostring(sl, format.mintick),
+             style=label.style_label_down, color=bullColor, textcolor=color.white, size=size.tiny)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── LIQUIDITY LEVEL DRAWING ─────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+var line liqLineAbove1 = na
+var line liqLineBelow1 = na
+var line liqLineAbove2 = na
+var line liqLineBelow2 = na
+var label liqLabelAbove = na
+var label liqLabelBelow = na
+
+if showLiqLevels and barstate.islast
+    line.delete(liqLineAbove1)
+    line.delete(liqLineBelow1)
+    line.delete(liqLineAbove2)
+    line.delete(liqLineBelow2)
+    label.delete(liqLabelAbove)
+    label.delete(liqLabelBelow)
+
+    extendBars = 30
+
+    if not na(liqAbove1)
+        liqLineAbove1 := line.new(bar_index - liqLookback, liqAbove1, bar_index + extendBars, liqAbove1,
+             color=liqBearColor, style=line.style_solid, width=2)
+    if not na(liqBelow1)
+        liqLineBelow1 := line.new(bar_index - liqLookback, liqBelow1, bar_index + extendBars, liqBelow1,
+             color=liqBullColor, style=line.style_solid, width=2)
+    if not na(liqAbove2)
+        liqLineAbove2 := line.new(bar_index - liqLookback, liqAbove2, bar_index + extendBars, liqAbove2,
+             color=liqBearColor, style=line.style_dashed, width=1)
+    if not na(liqBelow2)
+        liqLineBelow2 := line.new(bar_index - liqLookback, liqBelow2, bar_index + extendBars, liqBelow2,
+             color=liqBullColor, style=line.style_dashed, width=1)
+
+    if not na(bestLiqAbove)
+        liqLabelAbove := label.new(bar_index + extendBars, bestLiqAbove,
+             "Liq: " + str.tostring(bestLiqAbove, format.mintick),
+             style=label.style_label_down, color=liqBearColor, textcolor=color.white, size=size.small)
+    if not na(bestLiqBelow)
+        liqLabelBelow := label.new(bar_index + extendBars, bestLiqBelow,
+             "Liq: " + str.tostring(bestLiqBelow, format.mintick),
+             style=label.style_label_up, color=liqBullColor, textcolor=color.white, size=size.small)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── INFO TABLE (V2 ENHANCED) ────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+var table infoTable = table.new(position.top_right, 2, 10, bgcolor=color.new(color.black, 80), border_width=1)
+
+if barstate.islast
+    row = 0
+
+    // Trend
+    trendStr = close > trendMA_raw ? "BULLISH" : "BEARISH"
+    trendClr = close > trendMA_raw ? bullColor : bearColor
+    table.cell(infoTable, 0, row, "Trend", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, row, trendStr + (useTrendFilter ? "" : " (OFF)"), text_color=trendClr, text_size=size.small)
+    row += 1
+
+    // RSI
+    rsiClr = rsiVal < rsiOversold ? bullColor : rsiVal > rsiOverbought ? bearColor : color.gray
+    table.cell(infoTable, 0, row, "RSI(" + str.tostring(rsiLength) + ")", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, row, str.tostring(rsiVal, "#.#") + (useRSI ? "" : " (OFF)"), text_color=rsiClr, text_size=size.small)
+    row += 1
+
+    // ADX
+    adxClr = adxVal < adxThreshold ? bullColor : bearColor
+    table.cell(infoTable, 0, row, "ADX(" + str.tostring(adxLength) + ")", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, row, str.tostring(adxVal, "#.#") + (adxVal < adxThreshold ? " Range" : " Trend") + (useADX ? "" : " (OFF)"),
+         text_color=adxClr, text_size=size.small)
+    row += 1
+
+    // Volume
+    volRatio = volMA > 0 ? volume / volMA : 0
+    volClr = volRatio > volMult ? bullColor : color.gray
+    table.cell(infoTable, 0, row, "Vol Ratio", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, row, str.tostring(volRatio, "#.##") + "x" + (useVolFilter ? "" : " (OFF)"), text_color=volClr, text_size=size.small)
+    row += 1
+
+    // Deviation
+    devPct = (close - devMA) / devMA * 100
+    table.cell(infoTable, 0, row, "Dev from Mean", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, row, str.tostring(devPct, "#.##") + "%",
+         text_color=devPct > 0 ? bullColor : bearColor, text_size=size.small)
+    row += 1
+
+    // TP Mode
+    table.cell(infoTable, 0, row, "TP Mode", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, row, tpMode + (usePartialTP ? " + Trail" : ""), text_color=neutralColor, text_size=size.small)
+    row += 1
+
+    // SL Mode
+    table.cell(infoTable, 0, row, "SL Mode", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, row, slMode, text_color=neutralColor, text_size=size.small)
+    row += 1
+
+    // Liquidity
+    table.cell(infoTable, 0, row, "Liq Above", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, row, na(bestLiqAbove) ? "—" : str.tostring(bestLiqAbove, format.mintick),
+         text_color=liqBearColor, text_size=size.small)
+    row += 1
+
+    table.cell(infoTable, 0, row, "Liq Below", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, row, na(bestLiqBelow) ? "—" : str.tostring(bestLiqBelow, format.mintick),
+         text_color=liqBullColor, text_size=size.small)
+    row += 1
+
+    // Confluence score
+    score = 0
+    if close > trendMA_raw
+        score += 1
+    if rsiVal < rsiOversold or rsiVal > rsiOverbought
+        score += 1
+    if adxVal < adxThreshold
+        score += 1
+    if volRatio > volMult
+        score += 1
+    scoreClr = score >= 3 ? bullColor : score >= 2 ? neutralColor : bearColor
+    table.cell(infoTable, 0, row, "Confluence", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, row, str.tostring(score) + "/4", text_color=scoreClr, text_size=size.small)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── BACKGROUND ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// ADX background: subtle green when ranging (favorable for mean reversion)
+bgcolor(useADX and adxVal < adxThreshold ? color.new(bullColor, 95) : na, title="Ranging Market BG")
+
+// ═══════════════════════════════════════════════════════════════
+// ─── ALERTS ──────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+alertcondition(validLongT1,  "Long Tier 1 (V2)", "V2 Bounce Buy - Tier 1 (RSI+ADX+Vol confirmed)")
+alertcondition(validLongT2,  "Long Tier 2 (V2)", "V2 Bounce Buy - Tier 2 (RSI+ADX+Vol confirmed)")
+alertcondition(validLongT3,  "Long Tier 3 (V2)", "V2 Bounce Buy - Tier 3 (RSI+ADX+Vol confirmed)")
+alertcondition(validShortT1, "Short Tier 1 (V2)","V2 Bounce Sell - Tier 1 (RSI+ADX+Vol confirmed)")
+alertcondition(validShortT2, "Short Tier 2 (V2)","V2 Bounce Sell - Tier 2 (RSI+ADX+Vol confirmed)")
+alertcondition(validShortT3, "Short Tier 3 (V2)","V2 Bounce Sell - Tier 3 (RSI+ADX+Vol confirmed)")
+alertcondition(anyLong,  "Any Long V2",  "V2 Bounce Buy (any tier, confirmed)")
+alertcondition(anyShort, "Any Short V2", "V2 Bounce Sell (any tier, confirmed)")
