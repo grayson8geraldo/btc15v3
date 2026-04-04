@@ -1,0 +1,348 @@
+// This Pine Script™ source code is subject to the terms of the Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+// © Mean Reversion Bounce Indicator
+
+//@version=5
+indicator("Mean Reversion Bounce", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=100)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── INPUTS ───────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// --- Trend Ribbon ---
+grpTrend = "═══ Trend Ribbon ═══"
+trendType    = input.string("EMA", "MA Type", options=["EMA","SMA","HMA","DEMA","VWAP"], group=grpTrend)
+trendLength  = input.int(200, "Length", minval=1, group=grpTrend)
+trendTF      = input.timeframe("", "Timeframe (MTF)", tooltip="Leave blank for current TF", group=grpTrend)
+showRibbon   = input.bool(true, "Show Ribbon", group=grpTrend)
+ribbonWidth  = input.int(3, "Ribbon Width", minval=1, maxval=10, group=grpTrend)
+
+// --- Mean Reversion Engine ---
+grpEngine = "═══ Mean Reversion Engine ═══"
+devSource    = input.source(close, "Source", group=grpEngine)
+devLength    = input.int(20, "Deviation Lookback", minval=2, group=grpEngine)
+devMult1     = input.float(1.5, "Tier 1 Multiplier", minval=0.1, step=0.1, group=grpEngine)
+devMult2     = input.float(2.5, "Tier 2 Multiplier", minval=0.1, step=0.1, group=grpEngine)
+devMult3     = input.float(3.5, "Tier 3 Multiplier", minval=0.1, step=0.1, group=grpEngine)
+devMaType    = input.string("EMA", "Deviation MA Type", options=["EMA","SMA"], group=grpEngine)
+devMaLen     = input.int(20, "Deviation MA Length", minval=2, group=grpEngine)
+
+// --- Signal Display ---
+grpSignals = "═══ Signals ═══"
+showTier1    = input.bool(true,  "Show Tier 1 (Circles)", group=grpSignals)
+showTier2    = input.bool(true,  "Show Tier 2 (Triangles)", group=grpSignals)
+showTier3    = input.bool(true,  "Show Tier 3 (Diamonds)", group=grpSignals)
+showProjection = input.bool(true, "Show Signal Projection Lines", group=grpSignals)
+projColor    = input.color(color.new(color.gray, 50), "Projection Line Color", group=grpSignals)
+
+// --- Liquidity Levels ---
+grpLiq = "═══ Liquidity Levels ═══"
+liqTF1       = input.timeframe("D", "Liquidity TF 1 (solid)", group=grpLiq)
+liqTF2       = input.timeframe("240", "Liquidity TF 2 (dashed)", group=grpLiq)
+liqLookback  = input.int(20, "Lookback Bars (on HTF)", minval=5, maxval=100, group=grpLiq)
+showLiqLevels = input.bool(true, "Show Liquidity Levels", group=grpLiq)
+liqBullColor = input.color(color.new(color.green, 30), "Bull Liquidity Color", group=grpLiq)
+liqBearColor = input.color(color.new(color.red, 30), "Bear Liquidity Color", group=grpLiq)
+
+// --- Risk Management ---
+grpRM = "═══ Risk Management ═══"
+showSLTP     = input.bool(true, "Show SL/TP on Signals", group=grpRM)
+
+// --- Colors ---
+grpColors = "═══ Colors ═══"
+bullColor    = input.color(#00e676, "Bull Color", group=grpColors)
+bearColor    = input.color(#ff1744, "Bear Color", group=grpColors)
+tier1Alpha   = input.int(0, "Tier 1 Transparency", minval=0, maxval=100, group=grpColors)
+tier2Alpha   = input.int(0, "Tier 2 Transparency", minval=0, maxval=100, group=grpColors)
+tier3Alpha   = input.int(0, "Tier 3 Transparency", minval=0, maxval=100, group=grpColors)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── FUNCTIONS ────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// Calculate Hull MA
+hma(src, len) =>
+    halfLen = math.max(math.round(len / 2), 1)
+    sqrtLen = math.max(math.round(math.sqrt(len)), 1)
+    ta.wma(2 * ta.wma(src, halfLen) - ta.wma(src, len), sqrtLen)
+
+// Calculate Double EMA
+dema(src, len) =>
+    e1 = ta.ema(src, len)
+    2 * e1 - ta.ema(e1, len)
+
+// Generic MA function
+calcMA(src, len, maType) =>
+    switch maType
+        "EMA"  => ta.ema(src, len)
+        "SMA"  => ta.sma(src, len)
+        "HMA"  => hma(src, len)
+        "DEMA" => dema(src, len)
+        => ta.ema(src, len)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── TREND RIBBON (MTF) ──────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// Calculate trend MA on specified timeframe
+trendMA_raw = request.security(syminfo.tickerid, trendTF,
+     trendType == "VWAP" ? ta.vwap(hlc3) : calcMA(close, trendLength, trendType),
+     lookahead=barmerge.lookahead_off, gaps=barmerge.gaps_off)
+
+isBullTrend = close > trendMA_raw
+isBearTrend = close < trendMA_raw
+
+trendColor = isBullTrend ? bullColor : bearColor
+
+// Plot Trend Ribbon
+p_trendMA = plot(showRibbon ? trendMA_raw : na, "Trend MA", color=trendColor, linewidth=ribbonWidth)
+p_close   = plot(showRibbon ? close : na, "Close", color=na, display=display.none)
+fill(p_trendMA, p_close, color=color.new(trendColor, 85), title="Trend Ribbon Fill")
+
+// ═══════════════════════════════════════════════════════════════
+// ─── MEAN REVERSION ENGINE ───────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// Calculate deviation from mean
+devMA = devMaType == "EMA" ? ta.ema(devSource, devMaLen) : ta.sma(devSource, devMaLen)
+deviation = devSource - devMA
+
+// Standard deviation for bands
+stdev = ta.stdev(devSource, devLength)
+
+// Band levels
+upperBand1 = devMA + stdev * devMult1
+upperBand2 = devMA + stdev * devMult2
+upperBand3 = devMA + stdev * devMult3
+
+lowerBand1 = devMA - stdev * devMult1
+lowerBand2 = devMA - stdev * devMult2
+lowerBand3 = devMA - stdev * devMult3
+
+// ═══════════════════════════════════════════════════════════════
+// ─── SIGNAL DETECTION ────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// Tier 1: Price crosses below/above band 1 then returns (touch)
+longTier1  = low <= lowerBand1 and close > lowerBand1 and low[1] > lowerBand1[1]
+shortTier1 = high >= upperBand1 and close < upperBand1 and high[1] < upperBand1[1]
+
+// Tier 2: Price crosses below/above band 2 then returns
+longTier2  = low <= lowerBand2 and close > lowerBand2 and low[1] > lowerBand2[1]
+shortTier2 = high >= upperBand2 and close < upperBand2 and high[1] < upperBand2[1]
+
+// Tier 3: Price crosses below/above band 3 then returns
+longTier3  = low <= lowerBand3 and close > lowerBand3 and low[1] > lowerBand3[1]
+shortTier3 = high >= upperBand3 and close < upperBand3 and high[1] < upperBand3[1]
+
+// ═══════════════════════════════════════════════════════════════
+// ─── LIQUIDITY LEVELS (MTF) ──────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// HTF highs and lows for liquidity
+htf1_high = request.security(syminfo.tickerid, liqTF1, ta.highest(high, liqLookback), lookahead=barmerge.lookahead_off)
+htf1_low  = request.security(syminfo.tickerid, liqTF1, ta.lowest(low, liqLookback), lookahead=barmerge.lookahead_off)
+htf2_high = request.security(syminfo.tickerid, liqTF2, ta.highest(high, liqLookback), lookahead=barmerge.lookahead_off)
+htf2_low  = request.security(syminfo.tickerid, liqTF2, ta.lowest(low, liqLookback), lookahead=barmerge.lookahead_off)
+
+// Find nearest liquidity targets
+liqAbove1 = htf1_high > close ? htf1_high : na
+liqBelow1 = htf1_low < close ? htf1_low : na
+liqAbove2 = htf2_high > close ? htf2_high : na
+liqBelow2 = htf2_low < close ? htf2_low : na
+
+// Best liquidity target (closest)
+bestLiqAbove = not na(liqAbove2) and (na(liqAbove1) or liqAbove2 < liqAbove1) ? liqAbove2 : liqAbove1
+bestLiqBelow = not na(liqBelow2) and (na(liqBelow1) or liqBelow2 > liqBelow1) ? liqBelow2 : liqBelow1
+
+isLiqAbove1Solid = not na(liqAbove1) and (na(liqAbove2) or liqAbove1 <= liqAbove2)
+isLiqBelow1Solid = not na(liqBelow1) and (na(liqBelow2) or liqBelow1 >= liqBelow2)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── SIGNAL FILTER: TREND + LIQUIDITY ────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// Only allow signals that match trend direction AND have a liquidity target
+hasLiqTargetLong  = not na(bestLiqAbove)
+hasLiqTargetShort = not na(bestLiqBelow)
+
+// Filtered signals
+validLongT1  = longTier1  and isBullTrend and hasLiqTargetLong
+validLongT2  = longTier2  and isBullTrend and hasLiqTargetLong
+validLongT3  = longTier3  and isBullTrend and hasLiqTargetLong
+
+validShortT1 = shortTier1 and isBearTrend and hasLiqTargetShort
+validShortT2 = shortTier2 and isBearTrend and hasLiqTargetShort
+validShortT3 = shortTier3 and isBearTrend and hasLiqTargetShort
+
+// ═══════════════════════════════════════════════════════════════
+// ─── PLOT SIGNALS ────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// --- Tier 1: Small Circles ---
+plotshape(showTier1 and validLongT1, "Long T1", shape.circle, location.belowbar,
+     color=color.new(bullColor, tier1Alpha), size=size.tiny)
+plotshape(showTier1 and validShortT1, "Short T1", shape.circle, location.abovebar,
+     color=color.new(bearColor, tier1Alpha), size=size.tiny)
+
+// --- Tier 2: Triangles ---
+plotshape(showTier2 and validLongT2, "Long T2", shape.triangleup, location.belowbar,
+     color=color.new(bullColor, tier2Alpha), size=size.small)
+plotshape(showTier2 and validShortT2, "Short T2", shape.triangledown, location.abovebar,
+     color=color.new(bearColor, tier2Alpha), size=size.small)
+
+// --- Tier 3: Diamonds ---
+plotshape(showTier3 and validLongT3, "Long T3", shape.diamond, location.belowbar,
+     color=color.new(bullColor, tier3Alpha), size=size.normal)
+plotshape(showTier3 and validShortT3, "Short T3", shape.diamond, location.abovebar,
+     color=color.new(bearColor, tier3Alpha), size=size.normal)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── SIGNAL PROJECTION LINES ─────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// Show where the next signal would trigger
+plot(showProjection ? upperBand1 : na, "Upper Band 1", color=color.new(bearColor, 70), style=plot.style_circles, linewidth=1)
+plot(showProjection ? upperBand2 : na, "Upper Band 2", color=color.new(bearColor, 50), style=plot.style_circles, linewidth=1)
+plot(showProjection ? upperBand3 : na, "Upper Band 3", color=color.new(bearColor, 30), style=plot.style_circles, linewidth=1)
+plot(showProjection ? lowerBand1 : na, "Lower Band 1", color=color.new(bullColor, 70), style=plot.style_circles, linewidth=1)
+plot(showProjection ? lowerBand2 : na, "Lower Band 2", color=color.new(bullColor, 50), style=plot.style_circles, linewidth=1)
+plot(showProjection ? lowerBand3 : na, "Lower Band 3", color=color.new(bullColor, 30), style=plot.style_circles, linewidth=1)
+
+// Deviation Mean line
+plot(devMA, "Mean", color=color.new(color.white, 60), linewidth=1)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── LIQUIDITY LEVEL DRAWING ─────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+var line liqLineAbove1 = na
+var line liqLineBelow1 = na
+var line liqLineAbove2 = na
+var line liqLineBelow2 = na
+var label liqLabelAbove = na
+var label liqLabelBelow = na
+
+if showLiqLevels and barstate.islast
+    // Clean up previous drawings
+    line.delete(liqLineAbove1)
+    line.delete(liqLineBelow1)
+    line.delete(liqLineAbove2)
+    line.delete(liqLineBelow2)
+    label.delete(liqLabelAbove)
+    label.delete(liqLabelBelow)
+
+    extendBars = 30
+
+    // --- Liquidity TF1 (solid) ---
+    if not na(liqAbove1)
+        liqLineAbove1 := line.new(bar_index - liqLookback, liqAbove1, bar_index + extendBars, liqAbove1,
+             color=liqBearColor, style=line.style_solid, width=2)
+    if not na(liqBelow1)
+        liqLineBelow1 := line.new(bar_index - liqLookback, liqBelow1, bar_index + extendBars, liqBelow1,
+             color=liqBullColor, style=line.style_solid, width=2)
+
+    // --- Liquidity TF2 (dashed) ---
+    if not na(liqAbove2)
+        liqLineAbove2 := line.new(bar_index - liqLookback, liqAbove2, bar_index + extendBars, liqAbove2,
+             color=liqBearColor, style=line.style_dashed, width=1)
+    if not na(liqBelow2)
+        liqLineBelow2 := line.new(bar_index - liqLookback, liqBelow2, bar_index + extendBars, liqBelow2,
+             color=liqBullColor, style=line.style_dashed, width=1)
+
+    // Labels for nearest liquidity targets
+    if not na(bestLiqAbove)
+        liqLabelAbove := label.new(bar_index + extendBars, bestLiqAbove,
+             "Liq Target: " + str.tostring(bestLiqAbove, format.mintick),
+             style=label.style_label_down, color=liqBearColor, textcolor=color.white, size=size.small)
+    if not na(bestLiqBelow)
+        liqLabelBelow := label.new(bar_index + extendBars, bestLiqBelow,
+             "Liq Target: " + str.tostring(bestLiqBelow, format.mintick),
+             style=label.style_label_up, color=liqBullColor, textcolor=color.white, size=size.small)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── SL / TP LABELS ON SIGNAL ────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// Calculate and draw SL/TP based on 1:1 RR to nearest liquidity
+anyLong  = (showTier1 and validLongT1) or (showTier2 and validLongT2) or (showTier3 and validLongT3)
+anyShort = (showTier1 and validShortT1) or (showTier2 and validShortT2) or (showTier3 and validShortT3)
+
+if showSLTP and anyLong and not na(bestLiqAbove)
+    entry = close
+    tp = bestLiqAbove
+    dist = tp - entry
+    sl = entry - dist  // 1:1 RR
+    label.new(bar_index, tp, "TP " + str.tostring(tp, format.mintick),
+         style=label.style_label_down, color=bullColor, textcolor=color.white, size=size.tiny)
+    label.new(bar_index, sl, "SL " + str.tostring(sl, format.mintick),
+         style=label.style_label_up, color=bearColor, textcolor=color.white, size=size.tiny)
+
+if showSLTP and anyShort and not na(bestLiqBelow)
+    entry = close
+    tp = bestLiqBelow
+    dist = entry - tp
+    sl = entry + dist  // 1:1 RR
+    label.new(bar_index, tp, "TP " + str.tostring(tp, format.mintick),
+         style=label.style_label_up, color=bearColor, textcolor=color.white, size=size.tiny)
+    label.new(bar_index, sl, "SL " + str.tostring(sl, format.mintick),
+         style=label.style_label_down, color=bullColor, textcolor=color.white, size=size.tiny)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── ALERTS ──────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+alertcondition(validLongT1,  "Long Tier 1",  "Bounce Buy Signal - Tier 1")
+alertcondition(validLongT2,  "Long Tier 2",  "Bounce Buy Signal - Tier 2")
+alertcondition(validLongT3,  "Long Tier 3",  "Bounce Buy Signal - Tier 3")
+alertcondition(validShortT1, "Short Tier 1", "Bounce Sell Signal - Tier 1")
+alertcondition(validShortT2, "Short Tier 2", "Bounce Sell Signal - Tier 2")
+alertcondition(validShortT3, "Short Tier 3", "Bounce Sell Signal - Tier 3")
+alertcondition(anyLong,  "Any Long Signal",  "Bounce Buy Signal (any tier)")
+alertcondition(anyShort, "Any Short Signal", "Bounce Sell Signal (any tier)")
+
+// ═══════════════════════════════════════════════════════════════
+// ─── INFO TABLE ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+var table infoTable = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 80), border_width=1)
+
+if barstate.islast
+    trendStr = isBullTrend ? "BULLISH" : "BEARISH"
+    trendClr = isBullTrend ? bullColor : bearColor
+
+    table.cell(infoTable, 0, 0, "Trend", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 0, trendStr, text_color=trendClr, text_size=size.small)
+
+    table.cell(infoTable, 0, 1, "Trend MA (" + trendType + ")", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 1, str.tostring(trendMA_raw, format.mintick), text_color=color.white, text_size=size.small)
+
+    table.cell(infoTable, 0, 2, "Liq Above", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 2, na(bestLiqAbove) ? "—" : str.tostring(bestLiqAbove, format.mintick),
+         text_color=liqBearColor, text_size=size.small)
+
+    table.cell(infoTable, 0, 3, "Liq Below", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 3, na(bestLiqBelow) ? "—" : str.tostring(bestLiqBelow, format.mintick),
+         text_color=liqBullColor, text_size=size.small)
+
+    devPct = (close - devMA) / devMA * 100
+    table.cell(infoTable, 0, 4, "Dev from Mean", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 4, str.tostring(devPct, "#.##") + "%",
+         text_color=devPct > 0 ? bullColor : bearColor, text_size=size.small)
+
+    // Warning: no liquidity target
+    warnText = ""
+    if isBullTrend and na(bestLiqAbove)
+        warnText := "⚠ No liq above — reversal risk"
+    if isBearTrend and na(bestLiqBelow)
+        warnText := "⚠ No liq below — reversal risk"
+    table.cell(infoTable, 0, 5, warnText, text_color=color.yellow, text_size=size.small, colspan=2)
+
+// ═══════════════════════════════════════════════════════════════
+// ─── BACKGROUND WARNING ──────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// Subtle background warning when signal fires but no liq target (reversal risk)
+noLiqWarnLong  = (longTier1 or longTier2 or longTier3) and isBullTrend and not hasLiqTargetLong
+noLiqWarnShort = (shortTier1 or shortTier2 or shortTier3) and isBearTrend and not hasLiqTargetShort
+bgcolor(noLiqWarnLong or noLiqWarnShort ? color.new(color.yellow, 90) : na, title="No Liquidity Warning")
