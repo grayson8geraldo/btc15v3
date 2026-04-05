@@ -22,8 +22,8 @@ import requests
 # ─── НАСТРОЙКИ (ЗАПОЛНИТЕ ПЕРЕД ЗАПУСКОМ) ─────────────────────
 # ═══════════════════════════════════════════════════════════════
 
-TELEGRAM_TOKEN = "ВСТАВЬТЕ_ТОКЕН_ОТ_BOTFATHER"
-CHAT_ID = "ВСТАВЬТЕ_ВАШ_CHAT_ID"
+TELEGRAM_TOKEN = "8742677193:AAGs3g_s9LKr_JpmuTmNcKYSp5jFy8lHkOM"
+CHAT_ID = "8549041207"
 
 # Портфель
 PORTFOLIO = 200       # Ваш депозит в $
