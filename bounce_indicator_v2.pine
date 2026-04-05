@@ -451,14 +451,148 @@ if barstate.islast
 bgcolor(useADX and adxVal < adxThreshold ? color.new(bullColor, 95) : na, title="Ranging Market BG")
 
 // ═══════════════════════════════════════════════════════════════
-// ─── ALERTS ──────────────────────────────────────────────────
+// ─── PORTFOLIO & POSITION SIZING ─────────────────────────────
 // ═══════════════════════════════════════════════════════════════
 
-alertcondition(validLongT1,  "Long Tier 1 (V2)", "V2 Bounce Buy - Tier 1 (RSI+ADX+Vol confirmed)")
-alertcondition(validLongT2,  "Long Tier 2 (V2)", "V2 Bounce Buy - Tier 2 (RSI+ADX+Vol confirmed)")
-alertcondition(validLongT3,  "Long Tier 3 (V2)", "V2 Bounce Buy - Tier 3 (RSI+ADX+Vol confirmed)")
-alertcondition(validShortT1, "Short Tier 1 (V2)","V2 Bounce Sell - Tier 1 (RSI+ADX+Vol confirmed)")
-alertcondition(validShortT2, "Short Tier 2 (V2)","V2 Bounce Sell - Tier 2 (RSI+ADX+Vol confirmed)")
-alertcondition(validShortT3, "Short Tier 3 (V2)","V2 Bounce Sell - Tier 3 (RSI+ADX+Vol confirmed)")
-alertcondition(anyLong,  "Any Long V2",  "V2 Bounce Buy (any tier, confirmed)")
-alertcondition(anyShort, "Any Short V2", "V2 Bounce Sell (any tier, confirmed)")
+grpPortfolio = "═══ Portfolio & Alerts ═══"
+portfolioSize  = input.float(200, "Portfolio Size ($)", minval=1, group=grpPortfolio, tooltip="Your current account balance")
+riskPerTrade   = input.float(2.0, "Risk per Trade (%)", minval=0.1, maxval=20, step=0.5, group=grpPortfolio, tooltip="2% recommended for $200 account")
+alertTiersOnly = input.string("Tier 3 Only", "Alert for", options=["Tier 3 Only", "Tier 2+3", "All Tiers"], group=grpPortfolio,
+     tooltip="Tier 3 has best backtest results (PF 2.04)")
+
+// Calculate position sizing for alerts
+calcPositionSize(entryPrice, slPrice, isLong) =>
+    riskAmount = portfolioSize * (riskPerTrade / 100)
+    slDist = isLong ? (entryPrice - slPrice) / entryPrice : (slPrice - entryPrice) / entryPrice
+    posSize = slDist > 0 ? riskAmount / slDist : 0.0
+    leverage = posSize > 0 ? posSize / portfolioSize : 0.0
+    [posSize, leverage, riskAmount]
+
+// ═══════════════════════════════════════════════════════════════
+// ─── SMART ALERTS WITH TRADE PARAMETERS ──────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// Determine which tiers to alert
+alertT1 = alertTiersOnly == "All Tiers"
+alertT2 = alertTiersOnly == "All Tiers" or alertTiersOnly == "Tier 2+3"
+alertT3 = true  // Always alert Tier 3
+
+// --- Build alert messages with exact numbers ---
+
+// Helper: format number
+f(v) => str.tostring(v, format.mintick)
+f2(v) => str.tostring(v, "#.##")
+
+// LONG TIER 3
+longT3_entry = lowerBand3
+longT3_tp    = devMA
+longT3_sl    = lowerBand3 - stdev * slStdevMult
+[longT3_pos, longT3_lev, longT3_risk] = calcPositionSize(longT3_entry, longT3_sl, true)
+longT3_rrDist = longT3_entry > 0 ? (longT3_tp - longT3_entry) / (longT3_entry - longT3_sl) : 0
+
+longT3_msg = "LONG BTC (Tier 3)\n" +
+     "Entry (limit): " + f(longT3_entry) + "\n" +
+     "TP: " + f(longT3_tp) + "\n" +
+     "SL: " + f(longT3_sl) + "\n" +
+     "RR: " + f2(longT3_rrDist) + ":1\n" +
+     "Position: $" + f2(longT3_pos) + "\n" +
+     "Leverage: " + f2(longT3_lev) + "x\n" +
+     "Risk: $" + f2(longT3_risk) + " (" + f2(riskPerTrade) + "%)"
+
+// SHORT TIER 3
+shortT3_entry = upperBand3
+shortT3_tp    = devMA
+shortT3_sl    = upperBand3 + stdev * slStdevMult
+[shortT3_pos, shortT3_lev, shortT3_risk] = calcPositionSize(shortT3_entry, shortT3_sl, false)
+shortT3_rrDist = shortT3_entry > 0 ? (shortT3_entry - shortT3_tp) / (shortT3_sl - shortT3_entry) : 0
+
+shortT3_msg = "SHORT BTC (Tier 3)\n" +
+     "Entry (limit): " + f(shortT3_entry) + "\n" +
+     "TP: " + f(shortT3_tp) + "\n" +
+     "SL: " + f(shortT3_sl) + "\n" +
+     "RR: " + f2(shortT3_rrDist) + ":1\n" +
+     "Position: $" + f2(shortT3_pos) + "\n" +
+     "Leverage: " + f2(shortT3_lev) + "x\n" +
+     "Risk: $" + f2(shortT3_risk) + " (" + f2(riskPerTrade) + "%)"
+
+// LONG TIER 2
+longT2_entry = lowerBand2
+longT2_tp    = devMA
+longT2_sl    = lowerBand2 - stdev * slStdevMult
+[longT2_pos, longT2_lev, longT2_risk] = calcPositionSize(longT2_entry, longT2_sl, true)
+longT2_rrDist = longT2_entry > 0 ? (longT2_tp - longT2_entry) / (longT2_entry - longT2_sl) : 0
+
+longT2_msg = "LONG BTC (Tier 2)\n" +
+     "Entry (limit): " + f(longT2_entry) + "\n" +
+     "TP: " + f(longT2_tp) + "\n" +
+     "SL: " + f(longT2_sl) + "\n" +
+     "RR: " + f2(longT2_rrDist) + ":1\n" +
+     "Position: $" + f2(longT2_pos) + "\n" +
+     "Leverage: " + f2(longT2_lev) + "x\n" +
+     "Risk: $" + f2(longT2_risk) + " (" + f2(riskPerTrade) + "%)"
+
+// SHORT TIER 2
+shortT2_entry = upperBand2
+shortT2_tp    = devMA
+shortT2_sl    = upperBand2 + stdev * slStdevMult
+[shortT2_pos, shortT2_lev, shortT2_risk] = calcPositionSize(shortT2_entry, shortT2_sl, false)
+shortT2_rrDist = shortT2_entry > 0 ? (shortT2_entry - shortT2_tp) / (shortT2_sl - shortT2_entry) : 0
+
+shortT2_msg = "SHORT BTC (Tier 2)\n" +
+     "Entry (limit): " + f(shortT2_entry) + "\n" +
+     "TP: " + f(shortT2_tp) + "\n" +
+     "SL: " + f(shortT2_sl) + "\n" +
+     "RR: " + f2(shortT2_rrDist) + ":1\n" +
+     "Position: $" + f2(shortT2_pos) + "\n" +
+     "Leverage: " + f2(shortT2_lev) + "x\n" +
+     "Risk: $" + f2(shortT2_risk) + " (" + f2(riskPerTrade) + "%)"
+
+// LONG TIER 1
+longT1_entry = lowerBand1
+longT1_tp    = devMA
+longT1_sl    = lowerBand1 - stdev * slStdevMult
+[longT1_pos, longT1_lev, longT1_risk] = calcPositionSize(longT1_entry, longT1_sl, true)
+
+longT1_msg = "LONG BTC (Tier 1)\n" +
+     "Entry (limit): " + f(longT1_entry) + "\n" +
+     "TP: " + f(longT1_tp) + "\n" +
+     "SL: " + f(longT1_sl) + "\n" +
+     "Position: $" + f2(longT1_pos) + "\n" +
+     "Leverage: " + f2(longT1_lev) + "x\n" +
+     "Risk: $" + f2(longT1_risk)
+
+// SHORT TIER 1
+shortT1_entry = upperBand1
+shortT1_tp    = devMA
+shortT1_sl    = upperBand1 + stdev * slStdevMult
+[shortT1_pos, shortT1_lev, shortT1_risk] = calcPositionSize(shortT1_entry, shortT1_sl, false)
+
+shortT1_msg = "SHORT BTC (Tier 1)\n" +
+     "Entry (limit): " + f(shortT1_entry) + "\n" +
+     "TP: " + f(shortT1_tp) + "\n" +
+     "SL: " + f(shortT1_sl) + "\n" +
+     "Position: $" + f2(shortT1_pos) + "\n" +
+     "Leverage: " + f2(shortT1_lev) + "x\n" +
+     "Risk: $" + f2(shortT1_risk)
+
+// --- Fire alerts ---
+if validLongT3 and alertT3
+    alert(longT3_msg, alert.freq_once_per_bar_close)
+if validShortT3 and alertT3
+    alert(shortT3_msg, alert.freq_once_per_bar_close)
+if validLongT2 and alertT2
+    alert(longT2_msg, alert.freq_once_per_bar_close)
+if validShortT2 and alertT2
+    alert(shortT2_msg, alert.freq_once_per_bar_close)
+if validLongT1 and alertT1
+    alert(longT1_msg, alert.freq_once_per_bar_close)
+if validShortT1 and alertT1
+    alert(shortT1_msg, alert.freq_once_per_bar_close)
+
+// Legacy alertconditions (for simple alerts)
+alertcondition(validLongT3,  "Long Tier 3",  "Bounce LONG T3")
+alertcondition(validShortT3, "Short Tier 3", "Bounce SHORT T3")
+alertcondition(validLongT2,  "Long Tier 2",  "Bounce LONG T2")
+alertcondition(validShortT2, "Short Tier 2", "Bounce SHORT T2")
+alertcondition(anyLong,  "Any Long",  "Bounce LONG signal")
+alertcondition(anyShort, "Any Short", "Bounce SHORT signal")
